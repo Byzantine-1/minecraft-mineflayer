@@ -1,0 +1,29 @@
+{
+  "name": "minecraft-mineflayer",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start:auto": "node index.js",
+    "start": "node index.js",
+    "start:proxy": "set BRIDGE_MODE=engine_proxy&& node index.js",
+    "lint:check": "node scripts/checkSyntax.js",
+    "pretest": "npm run lint:check",
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "smoke:proxy": "node scripts/smokeEngineProxy.js",
+    "smoke:auto": "node scripts/smokeAutonomous.js",
+    "ci": "npm run pretest && npm test && npm run smoke:proxy"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "mineflayer": "^4.35.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
