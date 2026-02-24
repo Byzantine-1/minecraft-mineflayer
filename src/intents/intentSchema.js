@@ -3,6 +3,7 @@ const { LAW_DEFINITIONS } = require('../behavior/laws')
 
 const VALID_MODES = new Set(['auto', 'manual'])
 const VALID_LAWS = new Set(Object.keys(LAW_DEFINITIONS))
+const VALID_APPOINT_ROLES = new Set([...ROLE_NAMES, 'militia'])
 
 function toBooleanSwitch(value) {
   const normalized = String(value || '').toLowerCase()
@@ -63,6 +64,75 @@ function parseChatIntent(message) {
   }
 
   if (root === '!all') {
+    if (
+      lowerParts[1] === 'council' &&
+      lowerParts[2] === 'permit' &&
+      lowerParts[3] === 'expedition'
+    ) {
+      const prefix = '!all council permit expedition '
+      return {
+        type: 'expedition.permit.issue',
+        reason: text.toLowerCase().startsWith(prefix)
+          ? text.slice(prefix.length).trim()
+          : parts.slice(4).join(' ').trim()
+      }
+    }
+
+    if (lowerParts[1] === 'council' && lowerParts[2] === 'appoint' && parts[3] && parts[4]) {
+      return {
+        type: 'council.appoint',
+        name: parts[3],
+        role: String(parts[4]).toLowerCase()
+      }
+    }
+
+    if (
+      lowerParts[1] === 'church' &&
+      lowerParts[2] === 'rite' &&
+      lowerParts[3] === 'warding' &&
+      parts[4]
+    ) {
+      return {
+        type: 'expedition.rite.warding',
+        permitId: parts[4]
+      }
+    }
+
+    if (lowerParts[1] === 'portal' && lowerParts[2] === 'open' && parts[3]) {
+      return {
+        type: 'expedition.portal.open',
+        permitId: parts[3]
+      }
+    }
+
+    if (lowerParts[1] === 'portal' && lowerParts[2] === 'seal') {
+      return {
+        type: 'expedition.portal.seal'
+      }
+    }
+
+    if (lowerParts[1] === 'expedition' && lowerParts[2] === 'start' && parts[3] && parts[4]) {
+      return {
+        type: 'expedition.start',
+        permitId: parts[3],
+        playerName: parts[4]
+      }
+    }
+
+    if (lowerParts[1] === 'expedition' && lowerParts[2] === 'fail') {
+      return {
+        type: 'expedition.fail',
+        reason: parts[3] || 'player_death'
+      }
+    }
+
+    if (lowerParts[1] === 'expedition' && lowerParts[2] === 'end') {
+      return {
+        type: 'expedition.end',
+        result: String(parts[3] || 'success').toLowerCase()
+      }
+    }
+
     if (lowerParts[1] === 'council' && lowerParts[2] === 'decree') {
       const prefix = '!all council decree '
       return {
@@ -308,6 +378,125 @@ function validateIntent(intent) {
         factionA,
         factionB,
         intensity: Math.round(intensity)
+      }
+    }
+  }
+
+  if (type === 'expedition.permit.issue') {
+    const reason = String(intent.reason || '').trim()
+    if (!reason) {
+      return {
+        ok: false,
+        error: 'Permit reason is required.'
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        type,
+        reason
+      }
+    }
+  }
+
+  if (type === 'expedition.rite.warding' || type === 'expedition.portal.open') {
+    const permitId = String(intent.permitId || '').trim()
+    if (!permitId) {
+      return {
+        ok: false,
+        error: 'Permit ID is required.'
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        type,
+        permitId
+      }
+    }
+  }
+
+  if (type === 'expedition.portal.seal') {
+    return {
+      ok: true,
+      value: { type }
+    }
+  }
+
+  if (type === 'expedition.start') {
+    const permitId = String(intent.permitId || '').trim()
+    const playerName = String(intent.playerName || '').trim()
+    if (!permitId || !playerName) {
+      return {
+        ok: false,
+        error: 'Expedition start requires permit ID and player name.'
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        type,
+        permitId,
+        playerName
+      }
+    }
+  }
+
+  if (type === 'expedition.fail') {
+    const reason = String(intent.reason || '').trim().toLowerCase()
+    if (!reason) {
+      return {
+        ok: false,
+        error: 'Expedition fail reason is required.'
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        type,
+        reason
+      }
+    }
+  }
+
+  if (type === 'expedition.end') {
+    const result = String(intent.result || 'success').trim().toLowerCase()
+    if (result !== 'success' && result !== 'failed') {
+      return {
+        ok: false,
+        error: "Expedition end must be 'success' or 'failed'."
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        type,
+        result
+      }
+    }
+  }
+
+  if (type === 'council.appoint') {
+    const name = String(intent.name || '').trim()
+    const role = String(intent.role || '').trim().toLowerCase()
+    if (!name) {
+      return {
+        ok: false,
+        error: 'Appoint command requires a citizen name.'
+      }
+    }
+    if (!VALID_APPOINT_ROLES.has(role)) {
+      return {
+        ok: false,
+        error: `Role must be one of: ${Array.from(VALID_APPOINT_ROLES).join(', ')}`
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        type,
+        name,
+        role
       }
     }
   }

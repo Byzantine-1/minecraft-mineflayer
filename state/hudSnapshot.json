@@ -1,0 +1,21 @@
+{
+  "ts": "2026-02-24T06:37:07.298Z",
+  "reason": "startup",
+  "schemaVersion": 1,
+  "portalStatus": "sealed",
+  "cooldownUntilDay": 0,
+  "currentDay": 0,
+  "permit": null,
+  "expedition": null,
+  "roster": {
+    "alive": 4,
+    "dead": 0,
+    "total": 4
+  },
+  "threat": {
+    "famine": 0,
+    "longNight": false,
+    "warIntensity": 0,
+    "raid": 0
+  }
+}

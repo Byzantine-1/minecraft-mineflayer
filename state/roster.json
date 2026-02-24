@@ -1,0 +1,24 @@
+{
+  "citizens": {
+    "mara": {
+      "alive": true,
+      "role": "cleric",
+      "reputation": 50
+    },
+    "eli": {
+      "alive": true,
+      "role": "militia",
+      "reputation": 50
+    },
+    "nox": {
+      "alive": true,
+      "role": "trader",
+      "reputation": 50
+    },
+    "marabot": {
+      "alive": true,
+      "role": "trader",
+      "reputation": 50
+    }
+  }
+}

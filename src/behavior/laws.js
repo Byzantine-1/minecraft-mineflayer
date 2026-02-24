@@ -88,12 +88,20 @@ function evaluateIntentLegality(intent, context) {
     }
   }
 
-  if (intent.type === 'law.set' || intent.type.startsWith('event.') || intent.type === 'council.decree') {
+  const intentType = String(intent.type || '')
+  const adminOnly =
+    intentType === 'law.set' ||
+    intentType === 'council.decree' ||
+    intentType === 'council.appoint' ||
+    intentType.startsWith('event.') ||
+    intentType.startsWith('expedition.')
+
+  if (adminOnly) {
     if (!context?.isAdmin) {
       return {
         allowed: false,
         lawName: 'governance',
-        reason: 'Only admins can change laws or world events.'
+        reason: 'Only admins can change governance, expedition, law, or world-event state.'
       }
     }
   }

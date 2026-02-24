@@ -1,18 +1,8 @@
 const { evaluateIntentLegality, enforcementResponse } = require('../behavior/laws')
 const { parseChatIntent, parseStdinIntent, validateIntent } = require('./intentSchema')
-
-function normalizeAdminUsers(adminUsersInput) {
-  if (Array.isArray(adminUsersInput)) {
-    return adminUsersInput
-      .map((value) => String(value || '').trim().toLowerCase())
-      .filter(Boolean)
-  }
-
-  return String(adminUsersInput || process.env.ADMIN_USERS || '')
-    .split(',')
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-}
+const { ExpeditionController } = require('../expeditions/expeditionController')
+const { loadRoster } = require('../state/stateStore')
+const { normalizeAdminUsers, isAdmin } = require('../security/admin')
 
 function formatEconomyStatus(status) {
   const topContracts = (status?.contracts || [])
@@ -27,36 +17,60 @@ function formatEconomyStatus(status) {
   ]
 }
 
-function formatSettlementStatus(status) {
+function formatSettlementStatus(status, shadowState) {
   const events = status?.events || {}
   const war = events.war || {}
   const population = status?.population || {}
   const reputation = status?.reputation || {}
+  const shadow = shadowState || {}
+  const activeExpedition = shadow.activeExpedition || null
+  const rosterStats = shadow.rosterStats || null
   const repLine = Object.entries(reputation)
     .slice(0, 3)
     .map(([user, value]) => `${user}:${value}`)
     .join(', ')
-  return [
+  const lines = [
     `[Settlement] famine=${events.famineSeverity} longNight=${events.longNight} raid=${events.raidSeverity}`,
     `[Settlement] war=${war.factionA || 'none'} vs ${war.factionB || 'none'} @ ${war.intensity || 0}`,
     `[Settlement] pop=${population.simulatedPopulation} households=${population.households} morale=${population.morale}`,
     `[Settlement] births=${population.births} deaths=${population.deaths} migration=${population.migrationNet}`,
     `[Settlement] reputation ${repLine || 'no violations recorded'}`
   ]
+
+  if (shadow.portalStatus) {
+    lines.push(
+      `[Expedition] portal=${shadow.portalStatus} cooldownUntilDay=${shadow.cooldownUntilDay || 0} currentDay=${shadow.currentDay || 0}`
+    )
+  }
+
+  if (activeExpedition) {
+    lines.push(
+      `[Expedition] status=${activeExpedition.status} permit=${activeExpedition.permitId} player=${activeExpedition.player}`
+    )
+  } else {
+    lines.push('[Expedition] status=none')
+  }
+
+  if (rosterStats) {
+    lines.push(`[Roster] alive=${rosterStats.alive} dead=${rosterStats.dead} total=${rosterStats.total}`)
+  }
+
+  return lines
 }
 
 class IntentRouter {
-  constructor({ runtime, worldAuthority, adminUsers }) {
+  constructor({ runtime, worldAuthority, adminUsers, expeditionController }) {
     this.runtime = runtime
     this.worldAuthority = worldAuthority
-    this.adminUsers = new Set(normalizeAdminUsers(adminUsers))
+    this.adminUsers = normalizeAdminUsers(adminUsers)
+    this.expeditionController = expeditionController || new ExpeditionController({
+      runtime,
+      stateDir: runtime?.env?.STATE_DIR || process.env.STATE_DIR
+    })
   }
 
   isAdmin(username) {
-    if (!username) {
-      return false
-    }
-    return this.adminUsers.has(String(username).toLowerCase())
+    return isAdmin(username, this.adminUsers)
   }
 
   async handleChat({ botName, username, message }) {
@@ -136,6 +150,22 @@ class IntentRouter {
         return this.handleLongNight(intent.enabled, username)
       case 'event.war':
         return this.handleWar(intent.factionA, intent.factionB, intent.intensity, username)
+      case 'expedition.permit.issue':
+        return this.handlePermitIssue(botName, intent.reason, username)
+      case 'expedition.rite.warding':
+        return this.handlePermitBless(botName, intent.permitId, username)
+      case 'expedition.portal.open':
+        return this.handlePortalOpen(botName, intent.permitId, username)
+      case 'expedition.portal.seal':
+        return this.handlePortalSeal(botName, username)
+      case 'expedition.start':
+        return this.handleExpeditionStart(botName, intent.permitId, intent.playerName, username)
+      case 'expedition.fail':
+        return this.handleExpeditionFail(botName, intent.reason, username)
+      case 'expedition.end':
+        return this.handleExpeditionEnd(botName, intent.result, username)
+      case 'council.appoint':
+        return this.handleCouncilAppoint(botName, intent.name, intent.role, username)
       case 'economy.status':
         return this.handleEconomyStatus(botName)
       case 'settlement.status':
@@ -251,9 +281,126 @@ class IntentRouter {
 
   handleSettlementStatus(botName) {
     const status = this.worldAuthority.getSettlementStatus()
-    const lines = formatSettlementStatus(status)
+    const shadow = this.expeditionController.getStatus()
+    const roster = loadRoster({
+      stateDir: this.runtime?.env?.STATE_DIR || process.env.STATE_DIR
+    })
+    const citizens = Object.values(roster.citizens || {})
+    const rosterStats = {
+      total: citizens.length,
+      alive: citizens.filter((citizen) => citizen.alive !== false).length,
+      dead: citizens.filter((citizen) => citizen.alive === false).length
+    }
+
+    const lines = formatSettlementStatus(status, {
+      ...shadow,
+      rosterStats
+    })
     for (const line of lines) {
       this.broadcast(line)
+    }
+    if (typeof this.runtime.emitHudSnapshot === 'function') {
+      this.runtime.emitHudSnapshot('settlement.status', { force: true })
+    }
+    return true
+  }
+
+  handlePermitIssue(botName, reason, username) {
+    const result = this.expeditionController.issuePermit(reason, username)
+    if (!result.ok) {
+      this.respond(botName, `[Expedition] ${result.error}`)
+      return true
+    }
+    this.broadcast(
+      `[Expedition] permit issued id=${result.permit.permitId} expiresDay=${result.permit.expiresAtDay}`
+    )
+    return true
+  }
+
+  handlePermitBless(botName, permitId, username) {
+    const result = this.expeditionController.blessPermit(permitId, username)
+    if (!result.ok) {
+      this.respond(botName, `[Expedition] ${result.error}`)
+      return true
+    }
+    this.broadcast(`[Expedition] permit blessed id=${permitId}`)
+    return true
+  }
+
+  handlePortalOpen(botName, permitId, username) {
+    const result = this.expeditionController.openPortal(permitId, username)
+    if (!result.ok) {
+      this.respond(botName, `[Expedition] ${result.error}`)
+      return true
+    }
+    this.broadcast(`[Expedition] portal opened via permit ${permitId}`)
+    return true
+  }
+
+  handlePortalSeal(botName, username) {
+    const result = this.expeditionController.sealPortal(username)
+    if (!result.ok) {
+      this.respond(botName, `[Expedition] ${result.error}`)
+      return true
+    }
+    this.broadcast(
+      `[Expedition] portal ${result.portalStatus} cooldownUntilDay=${result.cooldownUntilDay || 0}`
+    )
+    return true
+  }
+
+  handleExpeditionStart(botName, permitId, playerName, username) {
+    const botNames = Array.from(this.runtime.bots.keys())
+    const result = this.expeditionController.startExpedition(permitId, playerName, botNames)
+    if (!result.ok) {
+      this.respond(botName, `[Expedition] ${result.error}`)
+      return true
+    }
+    this.broadcast(
+      `[Expedition] started permit=${permitId} player=${playerName} bots=${result.expedition.bots.join(',') || 'none'}`
+    )
+    return true
+  }
+
+  handleExpeditionFail(botName, reason, username) {
+    const result = this.expeditionController.failExpedition(reason, username)
+    if (!result.ok) {
+      this.respond(botName, `[Expedition] ${result.error}`)
+      return true
+    }
+    this.respond(
+      botName,
+      `[Expedition] fail recorded reason=${reason} cooldownUntilDay=${result.cooldownUntilDay}`
+    )
+    return true
+  }
+
+  handleExpeditionEnd(botName, resultType, username) {
+    const result = this.expeditionController.endExpedition(resultType, username)
+    if (!result.ok) {
+      this.respond(botName, `[Expedition] ${result.error}`)
+      return true
+    }
+    this.respond(
+      botName,
+      `[Expedition] end status=${result.expedition.status} cooldownUntilDay=${result.cooldownUntilDay}`
+    )
+    return true
+  }
+
+  handleCouncilAppoint(botName, name, role, username) {
+    const result = this.runtime.appointCitizen(name, role, username)
+    if (!result.ok) {
+      this.respond(botName, `[Council] ${result.error}`)
+      return true
+    }
+    this.broadcast(
+      result.spawned
+        ? `[Council] appointed ${result.name} as ${result.role}; spawned immediately.`
+        : `[Council] appointed ${result.name} as ${result.role}.`
+    )
+    if (result.note) {
+      this.respond(botName, `[Council] ${result.note}`)
     }
     return true
   }

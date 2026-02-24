@@ -1,15 +1,17 @@
 const {
-  attackNearestHostileMob,
   sleep
 } = require('./taskUtils')
+const { isMilitiaRole } = require('../../doctrine/militiaDoctrine')
 
 module.exports = {
   id: 'raidDefense',
   description: 'Raid response against hostile mobs only (never players).',
   async run(context) {
     const signal = context.signal
-    const hostiles = context.perception?.nearbyHostiles || []
     const allowCombat = !!context.policy?.allowCombat
+    const role = context?.mind?.getPrimaryRole
+      ? context.mind.getPrimaryRole()
+      : context?.mind?.getRoles?.().primary
 
     if (!allowCombat) {
       await sleep(500, signal)
@@ -24,10 +26,31 @@ module.exports = {
       }
     }
 
-    const attackResult = await attackNearestHostileMob(context.bot, hostiles, {
-      allowCombat,
-      signal
-    })
+    if (!isMilitiaRole(role)) {
+      await sleep(500, signal)
+      return {
+        ok: false,
+        note: 'Combat doctrine restricts raid defense to militia roles.',
+        cooldownMs: 3000
+      }
+    }
+
+    const doctrine = context?.runtime?.militiaDoctrine
+    const attackResult = doctrine
+      ? await doctrine.engageHostiles({
+        bot: context.bot,
+        role,
+        perception: context.perception,
+        allowCombat,
+        durationSec: 10,
+        radius: Number(context?.authoritySnapshot?.institutions?.militia?.patrolRadius) || 12,
+        retreatHp: 8,
+        signal
+      })
+      : {
+        ok: false,
+        note: 'Militia doctrine unavailable.'
+      }
 
     if (!attackResult.ok) {
       return {
@@ -49,4 +72,3 @@ module.exports = {
     }
   }
 }
-

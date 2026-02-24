@@ -1,0 +1,25 @@
+{
+  "portal": {
+    "x": 0,
+    "y": 80,
+    "z": 0,
+    "dimension": "overworld",
+    "radius": 10
+  },
+  "returnShrine": {
+    "x": 10,
+    "y": 80,
+    "z": 10,
+    "dimension": "overworld"
+  },
+  "portalStatus": "sealed",
+  "cooldownUntilDay": 0,
+  "currentDay": 0,
+  "pendingPermit": null,
+  "activeExpedition": null,
+  "laws": {
+    "netherPermitRequired": true,
+    "combatOnlyMilitia": true,
+    "noPrivatePortals": true
+  }
+}

@@ -7,6 +7,15 @@ const { WorldAuthority } = require('./behavior/worldAuthority')
 const { BotMind } = require('./behavior/botMind')
 const { BehaviorOS } = require('./behavior/behaviorOS')
 const { IntentRouter } = require('./intents/intentRouter')
+const { MilitiaDoctrine } = require('./doctrine/militiaDoctrine')
+const { NarrationDirector } = require('./narration/narrationDirector')
+const { emitWorldEvent } = require('./events/worldEvents')
+const { buildHudSnapshot, persistHudSnapshot } = require('./hud/hudSnapshot')
+const {
+  loadSettlement,
+  loadRoster,
+  saveRoster
+} = require('./state/stateStore')
 
 const TEST_HANDLER_INSTALL_FLAG = '__bridgeTestHandlersInstalled'
 
@@ -15,6 +24,13 @@ function parseList(value) {
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
+}
+
+function normalizeCitizenName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
 }
 
 function resolveBridgeMode(env = process.env) {
@@ -356,6 +372,17 @@ class BridgeRuntime {
 
     this.bots = new Map()
     this.botNameIndex = new Map()
+    this.botProfiles = []
+    this.deceasedBots = new Set()
+    this.stateDir = this.env.STATE_DIR || process.env.STATE_DIR
+    this.emitWorldEventFn = typeof config.emitWorldEventFn === 'function'
+      ? config.emitWorldEventFn
+      : emitWorldEvent
+    this.hudMinIntervalMs = Math.max(
+      0,
+      Number(config.hudMinIntervalMs ?? this.env.HUD_MIN_INTERVAL_MS) || 10000
+    )
+    this.lastHudSnapshotAt = 0
     this.lastSaid = new Map()
     this.lastChatAtMs = new Map()
     this.chatMinIntervalMs = Math.max(
@@ -367,9 +394,13 @@ class BridgeRuntime {
 
     this.engineProxySession = null
     this.engineProcess = null
+    this.militiaDoctrine = null
+    this.narrationDirector = null
 
     if (this.mode === 'autonomous') {
       this.worldAuthority = new WorldAuthority()
+      this.militiaDoctrine = new MilitiaDoctrine({ runtime: this })
+      this.narrationDirector = new NarrationDirector({ runtime: this })
       this.intentRouter = new IntentRouter({
         runtime: this,
         worldAuthority: this.worldAuthority,
@@ -383,6 +414,289 @@ class BridgeRuntime {
 
   log(message) {
     this.logFn(message)
+  }
+
+  buildStateStoreAdapter() {
+    return {
+      appendLog: (entry) => {
+        const { appendLog } = require('./state/stateStore')
+        return appendLog(entry, { stateDir: this.stateDir })
+      }
+    }
+  }
+
+  emitWorldEvent(event) {
+    let persisted = null
+    try {
+      persisted = this.emitWorldEventFn(event, {
+        stateStore: this.buildStateStoreAdapter(),
+        nowFn: () => Date.now()
+      })
+    } catch (error) {
+      this.log(`[WorldEvent] failed to persist event ${event?.type || 'unknown'}: ${error.message}`)
+      return null
+    }
+
+    if (this.mode === 'autonomous') {
+      this.emitHudSnapshot(`event:${persisted.type}`)
+      if (this.narrationDirector) {
+        this.narrationDirector.maybeNarrate(persisted)
+      }
+    }
+
+    return persisted
+  }
+
+  emitHudSnapshot(reason = 'runtime', options = {}) {
+    if (this.mode !== 'autonomous') {
+      return null
+    }
+
+    const force = options.force === true
+    const now = Date.now()
+    if (!force && this.hudMinIntervalMs > 0 && now - this.lastHudSnapshotAt < this.hudMinIntervalMs) {
+      return null
+    }
+
+    try {
+      const settlement = loadSettlement({ stateDir: this.stateDir })
+      const roster = this.loadRosterState()
+      const worldStatus = this.worldAuthority?.getSettlementStatus
+        ? this.worldAuthority.getSettlementStatus()
+        : null
+      const snapshot = buildHudSnapshot({
+        settlement,
+        roster,
+        worldStatus,
+        reason,
+        nowIso: new Date(now).toISOString()
+      })
+      persistHudSnapshot(snapshot, { stateDir: this.stateDir })
+      this.lastHudSnapshotAt = now
+      this.log(`[HUD] ${JSON.stringify(snapshot)}`)
+      return snapshot
+    } catch (error) {
+      this.log(`[HUD] failed to emit snapshot (${reason}): ${error.message}`)
+      return null
+    }
+  }
+
+  loadRosterState() {
+    return loadRoster({ stateDir: this.stateDir })
+  }
+
+  saveRosterState(roster) {
+    return saveRoster(roster, { stateDir: this.stateDir })
+  }
+
+  shouldSpawnProfile(profile) {
+    if (this.mode === 'engine_proxy') {
+      return true
+    }
+
+    const safeName = normalizeCitizenName(profile?.username)
+    if (!safeName) {
+      return false
+    }
+
+    const roster = this.loadRosterState()
+    const citizen = roster.citizens?.[safeName]
+    if (citizen && citizen.alive === false) {
+      this.log(`[Runtime] skipping deceased citizen ${safeName} at startup.`)
+      return false
+    }
+    return true
+  }
+
+  ensureCitizenRecord(botName, role = 'farmer') {
+    const safeName = normalizeCitizenName(botName)
+    if (!safeName) {
+      return null
+    }
+
+    const roster = this.loadRosterState()
+    const existing = roster.citizens?.[safeName]
+    if (existing) {
+      return existing
+    }
+
+    roster.citizens[safeName] = {
+      alive: true,
+      role: String(role || 'farmer').toLowerCase(),
+      reputation: 50
+    }
+    this.saveRosterState(roster)
+    return roster.citizens[safeName]
+  }
+
+  getBotRole(botName) {
+    if (this.mode === 'engine_proxy') {
+      return 'farmer'
+    }
+
+    const record = this.resolveBotRecord(botName)
+    if (record?.mind && typeof record.mind.getPrimaryRole === 'function') {
+      return record.mind.getPrimaryRole()
+    }
+
+    const safeName = normalizeCitizenName(botName)
+    if (!safeName) {
+      return 'farmer'
+    }
+
+    const roster = this.loadRosterState()
+    return roster.citizens?.[safeName]?.role || 'farmer'
+  }
+
+  stopAllActiveTasks(reason = 'stop-all') {
+    let stopped = 0
+    for (const [botName, entry] of this.bots.entries()) {
+      if (entry.behavior && entry.behavior.stopActiveTask()) {
+        stopped += 1
+      }
+      if (entry.behavior) {
+        entry.behavior.stop(reason)
+      }
+    }
+    return stopped
+  }
+
+  markCitizenDead(botName, role, extra = {}) {
+    const safeName = normalizeCitizenName(botName)
+    if (!safeName) {
+      return null
+    }
+
+    const roster = this.loadRosterState()
+    const existing = roster.citizens?.[safeName] || {}
+    roster.citizens[safeName] = {
+      alive: false,
+      role: String(role || existing.role || 'farmer').toLowerCase(),
+      reputation: Number.isFinite(Number(existing.reputation))
+        ? Number(existing.reputation)
+        : 50
+    }
+    this.saveRosterState(roster)
+
+    let expeditionContext = null
+    try {
+      const settlement = loadSettlement({ stateDir: this.stateDir })
+      if (settlement?.activeExpedition) {
+        expeditionContext = {
+          permitId: settlement.activeExpedition.permitId || null,
+          status: settlement.activeExpedition.status || null
+        }
+      }
+    } catch (error) {
+      expeditionContext = null
+    }
+
+    this.emitWorldEvent({
+      type: 'npc_death',
+      actor: 'system',
+      details: {
+        name: safeName,
+        role: roster.citizens[safeName].role,
+        expeditionContext,
+        ...extra
+      }
+    })
+
+    return roster.citizens[safeName]
+  }
+
+  handleBotDeath(botName) {
+    const safeName = normalizeCitizenName(botName)
+    if (!safeName || this.deceasedBots.has(safeName)) {
+      return false
+    }
+    this.deceasedBots.add(safeName)
+
+    const role = this.getBotRole(botName)
+    this.markCitizenDead(botName, role)
+
+    const entry = this.resolveBotRecord(botName)
+    if (entry?.behavior) {
+      entry.behavior.stop('death')
+    }
+
+    try {
+      if (entry?.bot && typeof entry.bot.quit === 'function') {
+        entry.bot.quit('death')
+      }
+    } catch (error) {
+      this.log(`[Runtime:${botName}] quit on death failed: ${error.message}`)
+    }
+
+    this.broadcast(`[town] ${botName} has fallen.`)
+    return true
+  }
+
+  appointCitizen(name, role, actor = 'system') {
+    const safeName = normalizeCitizenName(name)
+    const safeRole = String(role || '').trim().toLowerCase()
+    if (!safeName) {
+      return { ok: false, error: 'Citizen name is required.' }
+    }
+    if (!safeRole) {
+      return { ok: false, error: 'Citizen role is required.' }
+    }
+
+    const roster = this.loadRosterState()
+    const existing = roster.citizens?.[safeName] || {}
+    roster.citizens[safeName] = {
+      alive: true,
+      role: safeRole,
+      reputation: Number.isFinite(Number(existing.reputation))
+        ? Number(existing.reputation)
+        : 50
+    }
+    this.saveRosterState(roster)
+
+    this.emitWorldEvent({
+      type: 'replacement_appointed',
+      actor,
+      details: {
+        name: safeName,
+        role: safeRole
+      }
+    })
+
+    this.deceasedBots.delete(safeName)
+
+    let spawned = false
+    let note = null
+    if (this.mode === 'autonomous' || this.mode === 'engine_proxy') {
+      const profile = this.botProfiles.find(
+        (candidate) => normalizeCitizenName(candidate.username) === safeName
+      )
+
+      if (profile) {
+        const alreadyOnline = this.resolveBotRecord(profile.username)
+        if (!alreadyOnline) {
+          this.createBot(profile)
+          spawned = true
+
+          if (this.mode === 'autonomous') {
+            const assignedRole = safeRole === 'militia' ? 'guard' : safeRole
+            this.setBotRole(profile.username, assignedRole, 'decree')
+          }
+        } else if (this.mode === 'autonomous') {
+          const assignedRole = safeRole === 'militia' ? 'guard' : safeRole
+          this.setBotRole(profile.username, assignedRole, 'decree')
+        }
+      } else {
+        note = 'Name not in BOT_NAMES/BOTS_JSON; restart with updated bot list to spawn immediately.'
+      }
+    }
+
+    return {
+      ok: true,
+      name: safeName,
+      role: safeRole,
+      spawned,
+      note
+    }
   }
 
   createBot(profile) {
@@ -475,6 +789,11 @@ class BridgeRuntime {
         if (behavior) {
           behavior.stop('kicked')
         }
+      })
+
+      bot.on('death', () => {
+        this.log(`[Runtime:${declaredName}] death event received.`)
+        this.handleBotDeath(declaredName)
       })
 
       bot.on('end', () => {
@@ -578,15 +897,22 @@ class BridgeRuntime {
     }
 
     const profiles = makeBotProfilesFromEnv(this.env, { mode: this.mode })
+    this.botProfiles = profiles.slice()
     if (profiles.length === 0) {
       throw new Error('No bot profile configured.')
     }
 
     for (const profile of profiles) {
+      if (!this.shouldSpawnProfile(profile)) {
+        continue
+      }
       this.createBot(profile)
     }
 
     this.attachStdin()
+    if (this.mode === 'autonomous') {
+      this.emitHudSnapshot('startup', { force: true })
+    }
   }
 
   getDefaultBotName() {
