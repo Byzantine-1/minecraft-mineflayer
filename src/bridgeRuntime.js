@@ -11,6 +11,8 @@ const { MilitiaDoctrine } = require('./doctrine/militiaDoctrine')
 const { NarrationDirector } = require('./narration/narrationDirector')
 const { emitWorldEvent } = require('./events/worldEvents')
 const { buildHudSnapshot, persistHudSnapshot } = require('./hud/hudSnapshot')
+const { parseExecutionResultLine } = require('./embodiment/contract')
+const { MineflayerEmbodimentAdapter } = require('./embodiment/mineflayerAdapter')
 const {
   loadSettlement,
   loadRoster,
@@ -378,6 +380,9 @@ class BridgeRuntime {
     this.emitWorldEventFn = typeof config.emitWorldEventFn === 'function'
       ? config.emitWorldEventFn
       : emitWorldEvent
+    this.emitEmbodimentEventFn = typeof config.emitEmbodimentEventFn === 'function'
+      ? config.emitEmbodimentEventFn
+      : null
     this.hudMinIntervalMs = Math.max(
       0,
       Number(config.hudMinIntervalMs ?? this.env.HUD_MIN_INTERVAL_MS) || 10000
@@ -396,6 +401,10 @@ class BridgeRuntime {
     this.engineProcess = null
     this.militiaDoctrine = null
     this.narrationDirector = null
+    this.embodimentAdapter = config.embodimentAdapter || new MineflayerEmbodimentAdapter({
+      runtime: this,
+      emitEvent: (event) => this.emitEmbodimentEvent(event)
+    })
 
     if (this.mode === 'autonomous') {
       this.worldAuthority = new WorldAuthority()
@@ -414,6 +423,33 @@ class BridgeRuntime {
 
   log(message) {
     this.logFn(message)
+  }
+
+  emitEmbodimentEvent(event) {
+    if (!event || typeof this.emitEmbodimentEventFn !== 'function') {
+      return event || null
+    }
+
+    try {
+      this.emitEmbodimentEventFn(event)
+      return event
+    } catch (error) {
+      this.log(`[Embodiment] failed to emit event ${event?.event || 'unknown'}: ${error.message}`)
+      return null
+    }
+  }
+
+  async embodyExecutionResult(executionResult) {
+    if (!this.embodimentAdapter || typeof this.embodimentAdapter.embodyExecutionResult !== 'function') {
+      return null
+    }
+
+    try {
+      return await this.embodimentAdapter.embodyExecutionResult(executionResult)
+    } catch (error) {
+      this.log(`[Embodiment] failed to embody execution result: ${error.message}`)
+      return null
+    }
   }
 
   buildStateStoreAdapter() {
@@ -840,6 +876,14 @@ class BridgeRuntime {
   }
 
   handleEngineStdoutLine(line) {
+    const executionResult = parseExecutionResultLine(line)
+    if (executionResult) {
+      Promise.resolve(this.embodyExecutionResult(executionResult)).catch((error) => {
+        this.log(`[Embodiment] async embodiment failed: ${error.message}`)
+      })
+      return
+    }
+
     if (!shouldForwardEngineLine(line)) {
       return
     }

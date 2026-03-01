@@ -5,6 +5,14 @@ Bridge/runtime layer for Mineflayer bots with two modes:
 - `autonomous` (Behavior OS loop)
 - `engine_proxy` (forwards chat to external engine `talk/god/exit` command plane)
 
+Embodiment seam:
+
+- accepted `execution-result.v1` JSON lines can now carry downstream `embodiment.actions`
+- the bridge normalizes those actions into `embodiment-request.v1` and applies them through a Mineflayer adapter
+- supported body actions are `speech.say`, `movement.intent`, `interaction.intent`, and `ambient.perform`
+- outcome reporting is emitted as `embodiment-result.v1` / `embodiment-event.v1`
+- Mineflayer remains downstream only: no proposal selection, no command acceptance, no shadow-state authority
+
 ## Expedition v0 + Mortality
 
 Bridge-local durable shadow state now lives under `state/`:
