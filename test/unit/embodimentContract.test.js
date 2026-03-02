@@ -125,6 +125,58 @@ test('parseExecutionResultLine recognizes execution-result.v1 JSON lines and ign
   })
 })
 
+test('buildEmbodimentRequest accepts the canonical execution-result.v1 contract shape', { timeout: 1000 }, () => {
+  const request = buildEmbodimentRequest({
+    type: 'execution-result.v1',
+    schemaVersion: 1,
+    executionId: 'result_1234',
+    resultId: 'result_1234',
+    proposalId: 'proposal_abc',
+    actorId: 'Mara',
+    townId: 'alpha',
+    proposalType: 'PROJECT_ADVANCE',
+    command: 'project advance alpha wall-1',
+    authorityCommands: ['project advance alpha wall-1'],
+    status: 'executed',
+    accepted: true,
+    executed: true,
+    reasonCode: 'EXECUTED',
+    embodiment: {
+      backendHint: 'mineflayer',
+      actions: [
+        {
+          type: 'speech.say',
+          text: 'Project line advancing.'
+        }
+      ]
+    }
+  })
+
+  assert.deepEqual(request, {
+    type: 'embodiment-request.v1',
+    schemaVersion: 1,
+    sourceType: 'execution-result.v1',
+    executionId: 'result_1234',
+    proposalId: 'proposal_abc',
+    actorId: 'mara',
+    accepted: true,
+    backendHint: 'mineflayer',
+    actions: [
+      {
+        actionId: 'speech-1',
+        type: 'speech.say',
+        actorId: 'mara',
+        text: 'Project line advancing.',
+        channel: 'public',
+        delivery: {
+          dedupe: false,
+          bypassRateLimit: false
+        }
+      }
+    ]
+  })
+})
+
 test('createEmbodimentResult reports partial downstream outcomes without introducing state authority fields', { timeout: 1000 }, () => {
   const request = buildEmbodimentRequest({
     type: 'execution-result.v1',
