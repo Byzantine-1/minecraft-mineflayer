@@ -3,7 +3,7 @@
 Bridge/runtime layer for Mineflayer bots with two modes:
 
 - `autonomous` (Behavior OS loop)
-- `engine_proxy` (forwards chat to external engine `talk/god/exit` command plane)
+- `engine_proxy` (forwards legacy `talk/god/exit` lines and `execution-handoff.v1` JSON to the external engine)
 
 Embodiment seam:
 

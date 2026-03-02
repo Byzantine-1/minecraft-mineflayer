@@ -31,9 +31,45 @@ test('engine_proxy maps execution-result.v1 lines through the embodiment seam in
     runtime.handleEngineStdoutLine(
       JSON.stringify({
         type: 'execution-result.v1',
-        executionId: 'exec-99',
-        status: 'accepted',
+        schemaVersion: 1,
+        executionId: 'result_99',
+        resultId: 'result_99',
+        proposalId: 'proposal_99',
+        handoffId: 'handoff_99',
+        idempotencyKey: 'proposal_99',
+        snapshotHash: 'a'.repeat(64),
+        decisionEpoch: 7,
+        townId: 'alpha',
+        proposalType: 'PROJECT_ADVANCE',
+        command: 'project advance alpha pr_1',
+        authorityCommands: ['project advance alpha pr_1'],
+        status: 'executed',
+        accepted: true,
+        executed: true,
+        reasonCode: 'EXECUTED',
         actorId: 'mara',
+        evaluation: {
+          preconditions: {
+            evaluated: true,
+            passed: true,
+            failures: []
+          },
+          staleCheck: {
+            evaluated: true,
+            passed: true,
+            actualSnapshotHash: null,
+            actualDecisionEpoch: 7
+          },
+          duplicateCheck: {
+            evaluated: true,
+            duplicate: false,
+            duplicateOf: null
+          }
+        },
+        worldState: {
+          postExecutionSnapshotHash: null,
+          postExecutionDecisionEpoch: 7
+        },
         embodiment: {
           backendHint: 'mineflayer',
           actions: [

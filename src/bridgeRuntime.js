@@ -20,6 +20,10 @@ const {
 } = require('./state/stateStore')
 
 const TEST_HANDLER_INSTALL_FLAG = '__bridgeTestHandlersInstalled'
+const EXECUTION_HANDOFF_SCHEMA = 'execution-handoff.v1'
+const HASH_PATTERN = /^[0-9a-f]{64}$/i
+const HANDOFF_ID_PATTERN = /^handoff_[0-9a-f]{64}$/i
+const PROPOSAL_ID_PATTERN = /^proposal_[0-9a-f]{64}$/i
 
 function parseList(value) {
   return String(value || '')
@@ -154,6 +158,132 @@ function parseChatCommand(message, chatPrefix = '') {
   }
 
   return { target, text }
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`
+  }
+
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value)
+      .filter((key) => value[key] !== undefined)
+      .sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  }
+
+  return JSON.stringify(value)
+}
+
+function isExecutionHandoffEnvelope(input) {
+  if (!isPlainObject(input)) {
+    return false
+  }
+  if (input.schemaVersion !== EXECUTION_HANDOFF_SCHEMA) {
+    return false
+  }
+  if (input.advisory !== true) {
+    return false
+  }
+  if (typeof input.handoffId !== 'string' || !HANDOFF_ID_PATTERN.test(input.handoffId)) {
+    return false
+  }
+  if (typeof input.proposalId !== 'string' || !PROPOSAL_ID_PATTERN.test(input.proposalId)) {
+    return false
+  }
+  if (input.idempotencyKey !== input.proposalId) {
+    return false
+  }
+  if (typeof input.snapshotHash !== 'string' || !HASH_PATTERN.test(input.snapshotHash)) {
+    return false
+  }
+  if (!Number.isInteger(input.decisionEpoch) || input.decisionEpoch < 0) {
+    return false
+  }
+  if (typeof input.command !== 'string' || input.command.trim().length === 0) {
+    return false
+  }
+  if (!isPlainObject(input.proposal)) {
+    return false
+  }
+  if (typeof input.proposal.type !== 'string' || input.proposal.type.trim().length === 0) {
+    return false
+  }
+  if (typeof input.proposal.actorId !== 'string' || input.proposal.actorId.trim().length === 0) {
+    return false
+  }
+  if (typeof input.proposal.townId !== 'string' || input.proposal.townId.trim().length === 0) {
+    return false
+  }
+  if (!isPlainObject(input.proposal.args)) {
+    return false
+  }
+  if (!isPlainObject(input.executionRequirements)) {
+    return false
+  }
+  if (input.executionRequirements.expectedSnapshotHash !== input.snapshotHash) {
+    return false
+  }
+  if (input.executionRequirements.expectedDecisionEpoch !== input.decisionEpoch) {
+    return false
+  }
+  if (!Array.isArray(input.executionRequirements.preconditions)) {
+    return false
+  }
+
+  return true
+}
+
+function parseExecutionHandoffInput(input) {
+  if (typeof input !== 'string') {
+    return null
+  }
+
+  const trimmed = input.trim()
+  if (!trimmed.startsWith('{')) {
+    return null
+  }
+
+  let parsed
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch (error) {
+    return null
+  }
+
+  return isExecutionHandoffEnvelope(parsed) ? parsed : null
+}
+
+function buildExecutionHandoffLine(handoff) {
+  if (!isExecutionHandoffEnvelope(handoff)) {
+    throw new Error('Execution handoff payload is missing or malformed.')
+  }
+  return stableStringify(handoff)
+}
+
+function buildEngineInputLine(input) {
+  if (typeof input === 'string') {
+    const trimmed = input.trim()
+    if (!trimmed) {
+      return null
+    }
+    const handoff = parseExecutionHandoffInput(trimmed)
+    return handoff ? buildExecutionHandoffLine(handoff) : trimmed
+  }
+
+  if (isExecutionHandoffEnvelope(input)) {
+    return buildExecutionHandoffLine(input)
+  }
+
+  return null
 }
 
 function buildEngineTalkLine(target, text) {
@@ -868,7 +998,7 @@ class BridgeRuntime {
         if (!trimmed) {
           return
         }
-        this.sendToEngine(trimmed)
+        this.submitEngineInput(trimmed)
       }
     })
 
@@ -1101,8 +1231,7 @@ class BridgeRuntime {
       return false
     }
 
-    this.sendToEngine(line)
-    return true
+    return this.submitEngineInput(line)
   }
 
   parseEngineReplyLine(rawLine) {
@@ -1132,6 +1261,21 @@ class BridgeRuntime {
       return false
     }
     return this.engineProxySession.sendLine(String(line))
+  }
+
+  submitEngineInput(input) {
+    const line = buildEngineInputLine(input)
+    if (!line) {
+      return false
+    }
+    return this.sendToEngine(line)
+  }
+
+  submitExecutionHandoff(handoff) {
+    if (!isExecutionHandoffEnvelope(handoff)) {
+      return false
+    }
+    return this.submitEngineInput(handoff)
   }
 
   shutdown(reason = 'shutdown') {
@@ -1172,8 +1316,12 @@ module.exports = {
   resolveBotNames,
   makeBotProfilesFromEnv,
   parseChatCommand,
+  buildEngineInputLine,
+  buildExecutionHandoffLine,
   buildEngineTalkLine,
+  isExecutionHandoffEnvelope,
   parseEngineStdoutLine,
+  parseExecutionHandoffInput,
   shouldForwardEngineLine,
   createBackoffDelay,
   startEngineProxy,
