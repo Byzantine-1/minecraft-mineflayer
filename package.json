@@ -12,6 +12,7 @@
     "test:watch": "node --test --watch",
     "smoke:proxy": "node scripts/smokeEngineProxy.js",
     "smoke:auto": "node scripts/smokeAutonomous.js",
+    "relay:execution:live": "node ./scripts/relayExecutionCheck.js",
     "ci": "npm run pretest && npm test && npm run smoke:proxy"
   },
   "keywords": [],

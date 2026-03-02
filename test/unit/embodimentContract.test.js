@@ -110,6 +110,10 @@ test('buildEmbodimentRequest normalizes accepted execution results into downstre
 test('parseExecutionResultLine recognizes execution-result.v1 JSON lines and ignores other stdout noise', { timeout: 1000 }, () => {
   assert.equal(parseExecutionResultLine('Mara: hello'), null)
   assert.equal(parseExecutionResultLine('{"type":"not-the-right-thing"}'), null)
+  assert.equal(
+    parseExecutionResultLine('> {"type":"execution-result.v1","executionId":"exec-3","status":"executed","actorId":"mara"}')?.executionId,
+    'exec-3'
+  )
 
   const parsed = parseExecutionResultLine(
     '{"type":"execution-result.v1","executionId":"exec-2","status":"accepted","actorId":"mara","embodiment":{"actions":[]}}'

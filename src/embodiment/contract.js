@@ -384,7 +384,10 @@ function parseExecutionResultLine(line) {
   if (typeof line !== 'string') {
     return null
   }
-  const trimmed = line.trim()
+  let trimmed = line.trim()
+  while (trimmed.startsWith('>')) {
+    trimmed = trimmed.slice(1).trimStart()
+  }
   if (!trimmed.startsWith('{')) {
     return null
   }
